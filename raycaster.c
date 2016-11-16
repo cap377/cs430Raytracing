@@ -35,6 +35,12 @@ void scale(double* v, double s){
 	v[2] *= s;
 }
 
+void mult(double* v, double* w){
+	v[0] *= w[0];
+	v[1] *= w[1];
+	v[2] *= w[2];
+}
+
 void subtract(double* v1, double* v2){
 	v1[0] -= v2[0];
 	v1[1] -= v2[1];
@@ -62,9 +68,22 @@ void reflect(double* v, double* n, double* r){
 	subtract(r, nNew);
 }
 
+void refract(double* v, double* n, double ior, double* R){
+	double angle = acos(dot(v, n));
+	double angle2 = sqr(1/ior) * (1-sqr(cos(angle)));
+	double new[3] = {n[0], n[1], n[2]};
+	double s = (1/ior) * cos(angle) - sqrt(1- angle2);
+	scale(new, s);
+	double vnew[3] = {v[0], v[1], v[2]};
+	scale(vnew, (1/ior));
+	for (int i = 0; i < 3; i++){
+		R[i] = vnew[i] + new[i];
+	}
+}
+
 double clamp(double number){
+	// scaling number to 255 range, then clamping
 	number *= 255;
-	printf("%f\n", number);
 	if (number < 0) {
 		return 0;
 	}
@@ -77,6 +96,7 @@ double clamp(double number){
 }
 
 void collect_lights(){
+	// loops through my object array and puts lights in special light array
 	int i = 0;
 	for (i = 0; object_array[i] != 0; i++) {
 		if (object_array[i]->kind == 3){
@@ -84,7 +104,6 @@ void collect_lights(){
 			light++;
 		}
 	}
-	printf("%i\n", light);
 }
 
 //////////////////////////////////////////////////////////
@@ -228,19 +247,16 @@ double plane_intersection(double* Ro, double* Rd,
 	return dot1/dot2;
 }
 
-double* shoot(double* Ro, double* Rd, int rec){
+
+void reflections(double* Ro, double* Rd, double* Rdc, Object* obj, double* ocolor, int depth){
 	
 	double color[3] = {0,0,0};
-	
-	if (rec == 7){
-		return color;
-	}
-	
-	double best_t = INFINITY;
 	int best;
-			
+	double best_t = INFINITY;
 	for (int i=0; object_array[i] != 0; i++) {
-		int type;
+		if (object_array[i] == obj){
+			continue;
+		}
 		double t = 0;
 		switch(object_array[i]->kind) {
 			case 0:
@@ -248,14 +264,12 @@ double* shoot(double* Ro, double* Rd, int rec){
 				break;
 			case 1:
 				// CHECK INTERSECTION FOR SPHERE
-				type = 1;
 				t = sphere_intersection(Ro, Rd,
 						object_array[i]->sphere.position,
 						object_array[i]->sphere.radius);
 				break;
 			case 2:
 				// CHECK INTERSECTION FOR PLANE
-				type = 2;
 				t = plane_intersection(Ro, Rd,
 					object_array[i]->plane.position,
 					object_array[i]->plane.normal);
@@ -269,131 +283,166 @@ double* shoot(double* Ro, double* Rd, int rec){
 		}
 		if (t > 0 && t < best_t) {
 			best_t = t;
-			best = i;					
+			best = i;	
 		}
-
-		int closest_shadow_object;
-		if (best_t > 0 && best_t != INFINITY) {
-			
-			for (int i = 0; lights[i] != NULL; i++) {
-				double ron[3] = {
-					best_t * Rd[0] + Ro[0],
-					best_t * Rd[1] + Ro[1],
-					best_t * Rd[2] + Ro[2]
+	}
+	double Ron[3] = {
+		best_t * Rd[0] + Ro[0],
+		best_t * Rd[1] + Ro[1],
+		best_t * Rd[2] + Ro[2]
+		};
+	int closest_shadow_object;
+	// shadow test loop, doesnt work
+	if (best_t > 0 && best_t != INFINITY) {
+		for (int i = 0; lights[i] != NULL; i++){
+			double Rdn[3] = {
+				lights[i]->light.position[0] - Ron[0],
+				lights[i]->light.position[1] - Ron[1],
+				lights[i]->light.position[2] - Ron[2]
 				};
-				double rdn[3] = {
-					lights[i]->light.position[0] - ron[0],
-					lights[i]->light.position[1] - ron[1],
-					lights[i]->light.position[2] - ron[2]
-				};
-				normalize(rdn);
-				closest_shadow_object = 0;
-				
-				for (int j = 0; object_array[j] != 0; j++){
-					double t = 0;
-					if (object_array[j] == object_array[best]){
-						continue;
-					}
-					switch(object_array[i]->kind) {
-						case 0:
-							// pass, its a camera
-							break;
-						case 1:
-							// CHECK INTERSECTION FOR SPHERE
-							t = sphere_intersection(ron, rdn,
-									object_array[i]->sphere.position,
-									object_array[i]->sphere.radius);
-							break;
-						case 2:
-							// CHECK INTERSECTION FOR PLANE
-							t = plane_intersection(ron, rdn,
-								object_array[i]->plane.position,
-								object_array[i]->plane.normal);
-							break;
-						case 3:
-							// pass, its a light
-							break;
-						default:
-							// Horrible error
-							fprintf(stderr, "Error: This is the worst scene file EVER.\n");
-							exit(1);
-					}
-					if (t > 0 && t < magnitude(rdn)){
-						closest_shadow_object = 1;
+			normalize(Rdn);
+			int t = 0;
+			closest_shadow_object = 0;
+			for (int j = 0; object_array[j] != 0; j++){
+				double t = 0;
+				if (object_array[j] == object_array[best]){
+					continue;
+				}
+				switch(object_array[j]->kind) {
+					case 0:
+						// pass, its a camera
 						break;
+					case 1:
+						// CHECK INTERSECTION FOR SPHERE
+						t = sphere_intersection(Ron, Rdn,
+								object_array[j]->sphere.position,
+								object_array[j]->sphere.radius);
+						break;
+					case 2:
+						// CHECK INTERSECTION FOR PLANE
+						t = plane_intersection(Ron, Rdn,
+							object_array[j]->plane.position,
+							object_array[j]->plane.normal);
+						break;
+					case 3:
+						// pass, its a light
+						break;
+					default:
+						// Horrible error
+						exit(1);
+				}
+				if (t > 0 && t < magnitude(Rdn)){
+					closest_shadow_object = 1;
+					break;
+				}
+			}
+			if (closest_shadow_object == 0){
+				// HOLDER VARIABLE FOR CLOSEST OBJECTS COLOR
+				color[0] = 0;
+				color[1] = 0;
+				color[2] = 0;
+				// same variable setting for light equation from project 3
+				double N[3];
+				if (object_array[best]->kind == 1){
+					N[0] = Ron[0] - object_array[best]->sphere.position[0];
+					N[1] = Ron[1] - object_array[best]->sphere.position[1];
+					N[2] = Ron[2] - object_array[best]->sphere.position[2];
+				}
+				else if (object_array[best]->kind == 2){
+					N[0] = object_array[best]->plane.normal[0];
+					N[1] = object_array[best]->plane.normal[1];
+					N[2] = object_array[best]->plane.normal[2];
+				}
+				normalize(N);
+				double L[3] = {Rdn[0], Rdn[1], Rdn[2]};
+				normalize(L);
+				double nL[3] = {-L[0], -L[1], -L[2]};
+				// reflected vector
+				double R[3];
+				reflect(L, N, R);
+				// vector from camera
+				double V[3] = {Rdc[0], Rdc[1], Rdc[2]};
+				// position vector of light
+				double pos[3] = {lights[i]->light.position[0],
+					lights[i]->light.position[1],
+					lights[i]->light.position[2]};
+				// finding distance of light from object
+				subtract(pos, Ron);
+				double d = magnitude(pos);
+				double col;
+				// finds color using lighting equations from previous project
+				for (int c = 0; c < 3; c++) {
+					 col = 1;
+					 if (lights[i]->light.angular != INFINITY && lights[i]->light.theta != 0) {
+						col *= fangular(nL, lights[i]->light.direction, lights[i]->light.angular, (lights[i]->light.theta)*0.0174533);
+					 }
+					 if (lights[i]->light.radial[0] != INFINITY) {
+						col *= fradial(lights[i]->light.radial[2], lights[i]->light.radial[1], lights[i]->light.radial[0], d);
+					 }
+					 if (object_array[best]->kind == 1){
+						col *= (diffuse_l(object_array[best]->sphere.diffuse[c], lights[i]->light.color[c], N, L) + (specular_l(object_array[best]->sphere.specular[c], lights[i]->light.color[c], V, R, N, L, 20)));
+						color[c] += col;
+					 }
+					 else if (object_array[best]->kind == 2){
+						col *= (diffuse_l(object_array[best]->plane.diffuse[c], lights[i]->light.color[c], N, L) + (specular_l(object_array[best]->plane.specular[c], lights[i]->light.color[c], V, R, N, L, 20)));
+						color[c] += col;
+					 }
+					 // makes sure colors are in correct range
+					 color[c] = clamp(color[c]);
+				}
+			}
+			// base case, only allowing a depth of 7 reflections
+			if (depth < 7){
+				double N[3];
+				// setting new normal vector to find reflected vector
+				if (object_array[best]->kind == 1){
+					N[0] = Ron[0] - object_array[best]->sphere.position[0];
+					N[1] = Ron[1] - object_array[best]->sphere.position[1];
+					N[2] = Ron[2] - object_array[best]->sphere.position[2];
+				}
+				else if (object_array[best]->kind == 2){
+					N[0] = Ron[0] - object_array[best]->plane.normal[0];
+					N[1] = Ron[1] - object_array[best]->plane.normal[1];
+					N[2] = Ron[2] - object_array[best]->plane.normal[2];
+				}
+				normalize(N);
+				double Rdn[3];
+				// REFLECTING THINGS
+				double reflected[3];
+				if (object_array[best]->kind == 1){
+					if (object_array[best]->sphere.reflectivity > 0){
+						// find reflected vector, then normalize
+						reflect(Rd, N, Rdn);
+						normalize(Rdn);
+						// recursive call
+						reflections(Ron, Rdn, Rdc, object_array[best], reflected, depth++);
 					}
 				}
-				if (closest_shadow_object == 0){
-					// HOLDER VARIABLE FOR CLOSEST OBJECTS COLOR
-					color[0] = 0;
-					color[1] = 0;
-					color[2] = 0;
-					double N[3];
+				else if (object_array[best]->kind == 1){
+					if (object_array[best]->plane.reflectivity > 0){
+						// find reflected vector, then normalize
+						reflect(Rd, N, Rdn);
+						normalize(Rdn);
+						// recursive call
+						reflections(Ron, Rdn, Rdc, object_array[best], reflected, depth++);
+					}
+				}
+				for (int i = 0; i < 3; i++){
+					// add reflected color to the current color
 					if (object_array[best]->kind == 1){
-						N[0] = ron[0] - object_array[best]->sphere.position[0];
-						N[1] = ron[1] - object_array[best]->sphere.position[1];
-						N[2] = ron[2] - object_array[best]->sphere.position[2];
+						color[i] += object_array[best]->sphere.reflectivity * reflected[i];
 					}
-					else if (object_array[best]->kind == 2){
-						N[0] = object_array[best]->plane.normal[0];
-						N[1] = object_array[best]->plane.normal[1];
-						N[2] = object_array[best]->plane.normal[2];
+					if (object_array[best]->kind == 2){
+						color[i] += object_array[best]->plane.reflectivity * reflected[i];
 					}
-					normalize(N);
-					double L[3] = {
-						rdn[0], 
-						rdn[1], 
-						rdn[2]
-					};
-					normalize(L);
-					double nL[3] = {
-						-L[0], 
-						-L[1], 
-						-L[2]
-					};
-					double R[3];
-					reflect(L, N, R);
-					double V[3] = {
-						Rd[0], 
-						Rd[1], 
-						Rd[2]
-					};
-					double pos[3] = {
-						lights[i]->light.position[0],
-						lights[i]->light.position[1],
-						lights[i]->light.position[2]};
-					subtract(pos, ron);
-					double d = magnitude(pos);
-					double col;
-					for (int c = 0; c < 3; c++) {
-						 col = 1;
-						 if (lights[i]->light.angular != INFINITY && lights[i]->light.theta != 0) {
-							col *= fangular(nL, lights[i]->light.direction, lights[i]->light.angular, (lights[i]->light.theta)*0.0174533);
-						 }
-						 if (lights[i]->light.radial[0] != INFINITY) {
-							col *= fradial(lights[i]->light.radial[2], lights[i]->light.radial[1], lights[i]->light.radial[0], d);
-						 }
-						 if (object_array[best]->kind == 1){
-							col *= (diffuse_l(object_array[best]->sphere.diffuse[c], lights[i]->light.color[c], N, L) + (specular_l(object_array[best]->sphere.specular[c], lights[i]->light.color[c], V, R, N, L, 20)));
-							color[c] += col;
-						 }
-						 else if (object_array[best]->kind == 2){
-							col *= (diffuse_l(object_array[best]->plane.diffuse[c], lights[i]->light.color[c], N, L) + (specular_l(object_array[best]->plane.specular[c], lights[i]->light.color[c], V, R, N, L, 20)));
-							color[c] += col;
-						 }
-						 color[c] = clamp(color[c]);
-					}
-					printf("printing color %f %f %f\n", color[0], color[1], color[2]);
 				}
-				else {
-					color[0] = 0;
-					color[1] = 0;
-					color[2] = 0;
-				}
-				addition(color, shoot(ron, rdn, rec++));
 			}
 		}
 	}
+	// set output color to found reflective color
+	ocolor[0] = color[0];
+	ocolor[1] = color[1];
+	ocolor[2] = color[2];
 }
 
 int main(int argc, char **argv) {
@@ -422,23 +471,23 @@ int main(int argc, char **argv) {
 		}
 		i++;
 	}
-  
+	// camera position
 	double cx = 0;
 	double cy = 0;
 
+	// picture width and height
 	int M = atoi(argv[2]);
 	int N = atoi(argv[1]);
-	
+
 	double pixheight = h / M;
 	double pixwidth = w / N;
+	
+	// initializing color vector
 	double color[3] = {0,0,0};
-	int best;
 	
 	// DECREMENTING Y COMPONENT TO FLIP PICTURE 
 	for (int y = M; y > 0; y--) {
-		for (int x = 0; x < N; x++) {
-			double best_t = INFINITY;
-			
+		for (int x = 0; x < N; x += 1) {
 			double Ro[3] = {0, 0, 0};
 			double Rd[3] = {
 				cx - (w/2) + pixwidth * (x + 0.5),
@@ -446,61 +495,16 @@ int main(int argc, char **argv) {
 				1
 			};
 			normalize(Rd);
-			
-			for (int i=0; object_array[i] != 0; i++) {
-				int type;
-				double t = 0;
-				switch(object_array[i]->kind) {
-					case 0:
-			  			// pass, its a camera
-			  			break;
-					case 1:
-						// CHECK INTERSECTION FOR SPHERE
-						type = 1;
-			  			t = sphere_intersection(Ro, Rd,
-								object_array[i]->sphere.position,
-								object_array[i]->sphere.radius);
-			  			break;
-					case 2:
-						// CHECK INTERSECTION FOR PLANE
-						type = 2;
-		  				t = plane_intersection(Ro, Rd,
-							object_array[i]->plane.position,
-							object_array[i]->plane.normal);
-		  				break;
-		  			case 3:
-						// pass, its a light
-						break;
-					default:
-			  			// Horrible error
-			  			fprintf(stderr, "Error: Unknown object found\n");
-			  			exit(1);
-				}
-				if (t > 0 && t < best_t) {
-					best_t = t;
-					best = i;					
-				}
-				addition(color, shoot(Ro, Rd, 0));
-			}
-			
-						
+			// first recursive call, which will return a color vector for that pixel
+			reflections(Ro, Rd, Rd, NULL, color, 0);
 			// CREATING A PIXEL
 			Pixel new;
-    		if (best_t > 0 && best_t != INFINITY) {
-				// SETTING PIXELS COLOR TO CLOSEST OBJECTS COLOR
-				new.red = color[0];
-				new.green = color[1];
-				new.blue = color[2];
-				// WRITING TO FILE IMMEDIATELY
-				fprintf(output, "%i %i %i ", new.red, new.green, new.blue);
-    		}
-    		else {
-				// OTHERWISE ITS AN EMPTY PIXEL, DEFAULT BLACK
-				new.red = 0;
-				new.green = 0;
-				new.blue = 0;
-				fprintf(output, "0 0 0 ");
-    		}
+			// SETTING PIXELS COLOR TO CLOSEST OBJECTS COLOR
+			new.red = color[0];
+			new.green = color[1];
+			new.blue = color[2];
+			// WRITING TO FILE IMMEDIATELY
+			fprintf(output, "%i %i %i ", new.red, new.green, new.blue);
     	}
   	}
   	fclose(output);
